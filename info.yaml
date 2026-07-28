@@ -1,0 +1,102 @@
+# ============================================================================
+# info.yaml — archivo de metadata que exige Tiny Tapeout.
+#
+# Esto NO es código de tu chip: es la "ficha" que usa la plataforma para
+# saber qué módulo sintetizar, cuánto espacio reservarte, y qué mostrar en
+# la página pública de tu proyecto (datasheet). Los NOMBRES de los campos
+# (title, top_module, ui[0], etc.) son fijos — no se pueden agregar, quitar
+# ni renombrar. Lo único que rellenas son los VALORES (después de los ":").
+#
+# Estructura completa oficial del template tt10-verilog-template. Fuente:
+# https://raw.githubusercontent.com/TinyTapeout/tt10-verilog-template/main/info.yaml
+# ============================================================================
+
+project:
+  title:        "CPU básica de 8 bits"   # TODO: título corto para el datasheet
+  author:       ""      # TODO: tu nombre (aparece públicamente en la ficha del chip)
+  discord:      ""      # Opcional: tu usuario de Discord, sirve para que el equipo
+                         # de Tiny Tapeout te asigne el rol correspondiente
+  description:  ""      # TODO: una sola línea explicando qué hace el proyecto
+  language:     "SystemVerilog"   # Lenguaje real que usas (ALU.sv, CONTROL.sv, etc. son .sv)
+  clock_hz:     0        # TODO: frecuencia de reloj objetivo en Hz (0 si aún no lo sabes /
+                          # no es crítico para esta CPU de prueba)
+
+  # Cuántos "tiles" ocupa tu diseño en el chip compartido. Un tile mide
+  # ~167x108 micrones. Valores válidos: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2, 8x2.
+  # No se puede adivinar de antemano: se decide DESPUÉS de correr la síntesis
+  # y ver el reporte de área (la CI de Tiny Tapeout te lo dice si "1x1" te
+  # queda chico). Con ALU + 2 registros + PC + IR + registro de salida +
+  # control, es razonable esperar que 1x1 no alcance, pero hay que medirlo.
+  tiles: "1x1"    # TODO: ajustar según el reporte de síntesis
+
+  # El módulo TOP de tu chip. Regla obligatoria de Tiny Tapeout: el nombre
+  # DEBE empezar con "tt_um_" y debe ser único (por eso se recomienda incluir
+  # tu usuario de GitHub). Este NO puede ser tu módulo "CPU" actual (src/CPU.sv)
+  # directamente, porque sus puertos no coinciden con la interfaz que exige
+  # la plataforma (ver src/tt_um_TEMPLATE.sv, el esqueleto que dejamos listo
+  # para que tú definas cómo conectar tu CPU a esos puertos).
+  top_module:  "tt_um_example"   # TODO: renombrar, ej. "tt_um_gusqfx_cpu_basica",
+                                  # y que coincida EXACTAMENTE con el nombre del
+                                  # module en tu archivo wrapper final.
+
+  # Lista de archivos fuente que se envían a síntesis (OpenLane), en el orden
+  # en que quieras, uno por línea. Deben estar dentro de ./src.
+  # IMPORTANTE: esta lista es independiente del makefile de simulación local
+  # (que usa $(wildcard src/*.sv) para tus pruebas con iverilog) — Tiny Tapeout
+  # solo mira esta lista, así que hay que mantenerla sincronizada a mano.
+  # Ahora mismo lista los módulos que ya existen; falta agregar aquí el
+  # archivo del wrapper (tt_um_...) una vez que lo termines y renombres,
+  # y AL MENOS que quede primero o en cualquier orden (el orden no importa,
+  # pero "top_module" sí debe coincidir con un módulo definido en alguno de
+  # estos archivos).
+  source_files:
+    - "CPU.sv"
+    - "ALU.sv"
+    - "CONTROL.sv"
+    - "Mem.sv"
+    - "MUX.sv"
+    - "MUX_3.sv"
+    - "REG.sv"
+    - "REGPC.sv"
+    # - "tt_um_TEMPLATE.sv"   # TODO: descomentar (y renombrar el archivo) cuando esté listo
+
+# ----------------------------------------------------------------------------
+# Pinout: descripciones cortas de cada pin físico, solo para la página web /
+# datasheet del proyecto (no afecta la síntesis). Deja en blanco "" los pines
+# que no uses — Tiny Tapeout pide explícitamente NO borrar ni agregar líneas
+# aquí, siempre son 8+8+8 aunque tu diseño use menos.
+# ----------------------------------------------------------------------------
+pinout:
+  # Entradas dedicadas (ui_in[0..7])
+  ui[0]: ""
+  ui[1]: ""
+  ui[2]: ""
+  ui[3]: ""
+  ui[4]: ""
+  ui[5]: ""
+  ui[6]: ""
+  ui[7]: ""
+
+  # Salidas dedicadas (uo_out[0..7])
+  uo[0]: ""
+  uo[1]: ""
+  uo[2]: ""
+  uo[3]: ""
+  uo[4]: ""
+  uo[5]: ""
+  uo[6]: ""
+  uo[7]: ""
+
+  # Pines bidireccionales (uio[0..7]) — su dirección la controla tu diseño
+  # con la señal uio_oe, pin por pin (1 = ese pin es salida, 0 = entrada)
+  uio[0]: ""
+  uio[1]: ""
+  uio[2]: ""
+  uio[3]: ""
+  uio[4]: ""
+  uio[5]: ""
+  uio[6]: ""
+  uio[7]: ""
+
+# No cambiar: versión del esquema de este archivo, la exige la plataforma.
+yaml_version: 6
