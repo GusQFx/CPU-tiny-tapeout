@@ -26,7 +26,12 @@ module tt_um_tiarinix_ttihp_verilog_template (
     assign uio_out = 8'h00;
     assign uio_oe  = 8'h00; // all 8 bidirectional pins are set as input
 
-    CPU #(.MEM_DEPTH(14)) cpu_inst (
+    // Bumped from 14: synthesis showed 73.99% utilization there, and
+    // $clog2(16)==$clog2(14)==4, so 16 is the largest depth that doesn't
+    // also widen PC/the address path (that jump happens at 17). See
+    // DESIGN.md's area-cut notes for the estimate behind this number --
+    // worth re-checking the real utilization % after this change.
+    CPU #(.MEM_DEPTH(16)) cpu_inst (
         .clk(clk),
         .reset(reset),
         .program_mode(uio_in[0]),
