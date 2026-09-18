@@ -1,102 +1,266 @@
-module CPU (
-    input logic [0:0] clk, reset,
-    input logic [7:0] Input_A, Input_B,
-    input logic [7:0] input_IR,
-    output logic [7:0] ALU_Out_CPU
-  );
+// CPU layout
+//
+// Depends on: modules/alu.sv, modules/control.sv, modules/memory.sv,
+// modules/mux.sv, modules/plus_one_adder.sv, modules/register.sv.
+// No `include here on purpose: every source
+// file is compiled together as an explicit list (see info.yaml
+// source_files and run_sim.sh), matching how Tiny Tapeout's synthesis
+// flow reads multi-file designs.
 
-  logic [7:0] A, B, IR, PC, Input_Reg_A, Input_Reg_B, Mem_Data_OUT, ALU_Out;
-  logic [0:0] we_REG_A, we_REG_B;
-  logic [1:0] MUX_A_sel, MUX_B_sel;
-  logic [0:0] ALU_Op;
-  logic [0:0] wr_IR;
-  logic [0:0] Inc_PC;
-  logic  wr_ALU_Out;
+module CPU #(
+    parameter int MEM_DEPTH = 16   // adjust based on leftover area when doing the layout
+) (
+    input  wire       clk,
+    input  wire       reset,
+    input  wire       program_mode,
+    input  wire       program_wr,
+    input  wire [7:0] external_input,
+    output wire [7:0] external_output
+);
 
-  REG RegA(
+    localparam int ADDR_WIDTH = $clog2(MEM_DEPTH);
+
+    // ---- Main bus ----
+    wire [7:0] bus;
+
+    // ---- Halt / clock enables ----
+    // A single real clock (`clk`) drives every flip-flop; gating the clock
+    // itself (as this used to do) creates two derived clock trees with no
+    // declared relationship in the SDC, which STA can't reconcile -- it
+    // showed up as an unfixable ~10ns hold violation between them. Freezing
+    // registers via a synchronous write-enable instead keeps one clock tree
+    // for the whole design.
+    wire halt_set;
+    reg  halted;
+
+    // PC and memory: freeze on HALT, but stay alive during flashing
+    wire mem_pc_en = ~halted;
+    // Rest of the CPU: freezes on HALT and also during flashing
+    wire cpu_en    = ~halted & ~program_mode;
+
+    // Synchronous reset, matching register.sv's reset style elsewhere in
+    // the design (Verilator flagged the previous async-reset version here
+    // as SYNCASYNCNET: the same `reset` net used both ways).
+    always @(posedge clk) begin
+        if (reset)
+            halted <= 1'b0;
+        else if (halt_set)
+            halted <= 1'b1;
+    end
+
+    // ============ External input ============
+
+    wire ext_in_wr, ext_in_en;
+    wire [7:0] ext_in_out;
+
+    register #(.WIDTH(8)) reg_ext_in (
+        .clk(clk), .reset(reset),
+        .wr(ext_in_wr & cpu_en), .Data_IN(external_input), .Data_OUT(ext_in_out)
+    );
+
+    wire ext_in_bus_en = ext_in_en & ~program_mode;
+
+    // ============ External output ============
+
+    wire ext_out_wr;
+
+    register #(.WIDTH(8)) reg_ext_out (
+        .clk(clk), .reset(reset),
+        .wr(ext_out_wr & cpu_en), .Data_IN(bus), .Data_OUT(external_output)
+    );
+
+    // ============ General-purpose registers: A, B, C ============
+    // A single select+wr pair from CONTROL (reg_dest_sel/reg_dest_wr) instead
+    // of one wr per register; decoded here into one enable per register.
+    // Cut back from 5 (A-E) to 3 (A-C) to free up area for a deeper
+    // instruction/data memory -- see DESIGN.md's area-cut notes.
+
+    wire [2:0] reg_dest_sel;
+    wire       reg_dest_wr;
+
+    wire reg_a_wr = reg_dest_wr & (reg_dest_sel == 3'd0) & cpu_en;
+    wire reg_b_wr = reg_dest_wr & (reg_dest_sel == 3'd1) & cpu_en;
+    wire reg_c_wr = reg_dest_wr & (reg_dest_sel == 3'd2) & cpu_en;
+
+    wire [7:0] reg_a_out, reg_b_out, reg_c_out;
+
+    register #(.WIDTH(8)) reg_a (
+        .clk(clk), .reset(reset),
+        .wr(reg_a_wr), .Data_IN(bus), .Data_OUT(reg_a_out)
+    );
+
+    register #(.WIDTH(8)) reg_b (
+        .clk(clk), .reset(reset),
+        .wr(reg_b_wr), .Data_IN(bus), .Data_OUT(reg_b_out)
+    );
+
+    register #(.WIDTH(8)) reg_c (
+        .clk(clk), .reset(reset),
+        .wr(reg_c_wr), .Data_IN(bus), .Data_OUT(reg_c_out)
+    );
+
+    // ============ ALU ============
+
+    wire [2:0] alu_sel_a, alu_sel_b;
+    wire [2:0] alu_op;
+    wire [7:0] alu_in_a, alu_in_b, alu_result, alu_flags;
+
+    mux #(.WIDTH(8), .N(3)) mux_alu_a (
+        .sel(alu_sel_a),
+        .Data_IN({reg_a_out, reg_b_out, reg_c_out}),
+        .Data_OUT(alu_in_a)
+    );
+
+    mux #(.WIDTH(8), .N(3)) mux_alu_b (
+        .sel(alu_sel_b),
+        .Data_IN({reg_a_out, reg_b_out, reg_c_out}),
+        .Data_OUT(alu_in_b)
+    );
+
+    ALU #(.WIDTH(8)) alu (
+        .A(alu_in_a), .B(alu_in_b), .op(alu_op),
+        .Y(alu_result), .flags(alu_flags)
+    );
+
+    // ============ Flags register ============
+
+    wire reg_f_wr;
+    wire [7:0] reg_f_out;
+
+    register #(.WIDTH(8)) reg_f (
+        .clk(clk), .reset(reset),
+        .wr(reg_f_wr & cpu_en), .Data_IN(alu_flags), .Data_OUT(reg_f_out)
+    );
+
+    // ============ ALU output register ============
+
+    wire alu_out_wr, alu_out_en;
+    wire [7:0] alu_out_data;
+
+    register #(.WIDTH(8)) reg_alu_out (
+        .clk(clk), .reset(reset),
+        .wr(alu_out_wr & cpu_en), .Data_IN(alu_result), .Data_OUT(alu_out_data)
+    );
+
+    wire alu_out_bus_en = alu_out_en & ~program_mode;
+
+    // ============ Output to bus: registers A..C ============
+
+    wire [2:0] bus_out_sel;
+    wire [7:0] bus_out_data;
+    wire bus_out_en;
+
+    mux #(.WIDTH(8), .N(3)) mux_bus_out (
+        .sel(bus_out_sel),
+        .Data_IN({reg_a_out, reg_b_out, reg_c_out}),
+        .Data_OUT(bus_out_data)
+    );
+
+    wire bus_out_bus_en = bus_out_en & ~program_mode;
+
+    // ============ Program Counter (PC) ============
+
+    wire pc_wr, pc_sel;
+    wire [7:0] pc_out, pc_plus_one, pc_next;
+
+    // In flashing mode, the PC advances with program_wr instead of normal control
+    wire [7:0] pc_data_in  = program_mode ? pc_plus_one : pc_next;
+    wire       pc_wr_final = program_mode ? program_wr  : pc_wr;
+
+    register #(.WIDTH(8)) reg_pc (
+        .clk(clk), .reset(reset),
+        .wr(pc_wr_final & mem_pc_en), .Data_IN(pc_data_in), .Data_OUT(pc_out)
+    );
+
+    PlusOneAdder #(.WIDTH(8)) pc_incrementer (
+        .Data_IN(pc_out), .Data_OUT(pc_plus_one)
+    );
+
+    mux #(.WIDTH(8), .N(2)) mux_pc_next (
+        .sel(pc_sel),
+        .Data_IN({bus, pc_plus_one}),
+        .Data_OUT(pc_next)
+    );
+
+    // ============ Memory ============
+    // No more ADDR register: LD/ST addresses are now embedded directly in
+    // the opcode byte (ir_out[2:0], 3 bits -> 0-7), instead of being
+    // fetched as a separate second byte and staged through a register.
+    // This both halves LD/ST program size (1 byte instead of 2) and
+    // removes a whole 8-bit register from the design. The trade-off: LD/ST
+    // can only address the first 8 memory words, and always go through A
+    // (no more per-instruction register choice for them) -- see
+    // DESIGN.md's area-cut notes.
+
+    wire mem_wr, mem_out_en, mem_addr_sel;
+    wire [7:0] mem_out;
+
+    // mem_addr_sel: 0 = embedded address from the opcode (LD/ST), 1 = PC (fetch)
+    wire [7:0] mem_addr_normal = mem_addr_sel ? pc_out : {5'b0, ir_out[2:0]};
+
+    // In flashing mode: writes external_input into mem[PC] and uses PC as the address
+    wire [7:0]             mem_data_in_final = program_mode ? external_input : bus;
+    wire [ADDR_WIDTH-1:0]  mem_addr_final    = program_mode ? pc_out[ADDR_WIDTH-1:0] : mem_addr_normal[ADDR_WIDTH-1:0];
+    wire                   mem_wr_final      = program_mode ? program_wr : mem_wr;
+
+    MEM #(.WIDTH(8), .DEPTH(MEM_DEPTH)) mem (
+        .clk(clk), .reset(reset),
+        .wr(mem_wr_final & mem_pc_en), .Data_IN(mem_data_in_final), .addr(mem_addr_final), .Data_OUT(mem_out)
+    );
+
+    wire mem_out_bus_en = mem_out_en & ~program_mode;
+
+    assign bus =
+        ({8{ext_in_bus_en}}  & ext_in_out)   |
+        ({8{alu_out_bus_en}} & alu_out_data) |
+        ({8{bus_out_bus_en}} & bus_out_data) |
+        ({8{mem_out_bus_en}} & mem_out);
+
+    // ============ Controller ============
+
+    wire ir_wr;
+    wire [7:0] ir_out;
+
+    register #(.WIDTH(8)) reg_ir (
+        .clk(clk), .reset(reset),
+        .wr(ir_wr & cpu_en), .Data_IN(bus), .Data_OUT(ir_out)
+    );
+
+    control control_unit (
         .clk(clk),
         .reset(reset),
-        .wr(we_REG_A),
-        .Data_IN(Input_Reg_A),
-        .Data_OUT(A)
-      );
+        .en(cpu_en),
+        .ir_out(ir_out),
+        .reg_f_out(reg_f_out),
 
-  REG RegB(
-        .clk(clk),
-        .reset(reset),
-        .wr(we_REG_B),
-        .Data_IN(Input_Reg_B),
-        .Data_OUT(B)
-      );
+        .ext_in_wr(ext_in_wr),
+        .ext_in_en(ext_in_en),
+        .ext_out_wr(ext_out_wr),
 
-  REG RegIR(
-        .clk(clk),
-        .reset(reset),
-        .wr(wr_IR),
-        .Data_IN(Mem_Data_OUT),
-        .Data_OUT(IR)
-      );
+        .reg_dest_sel(reg_dest_sel),
+        .reg_dest_wr(reg_dest_wr),
 
-  REGPC RegPC(
-        .clk(clk),
-        .reset(reset),
-        .wr(Inc_PC),
-        .Data_IN(PC),
-        .Data_OUT(PC)
-      );
+        .reg_f_wr(reg_f_wr),
 
-  REG ALU_salida(
-        .clk(clk),
-        .reset(reset),
-        .wr(wr_ALU_Out),
-        .Data_IN(ALU_Out),
-        .Data_OUT(ALU_Out_CPU)
-      );
+        .alu_sel_a(alu_sel_a),
+        .alu_sel_b(alu_sel_b),
+        .alu_op(alu_op),
+        .alu_out_wr(alu_out_wr),
+        .alu_out_en(alu_out_en),
 
-  ALU alu(
-        .clk(clk),
-        .Op(ALU_Op),
-        .A(A),
-        .B(B),
-        .Out(ALU_Out)
-      );
+        .bus_out_sel(bus_out_sel),
+        .bus_out_en(bus_out_en),
 
-  MUX_3 MUX_3_A(
-          .sel(MUX_A_sel),
-          .A(Input_A),
-          .B(ALU_Out_CPU),
-          .C(Mem_Data_OUT),
-          .Out(Input_Reg_A)
-        );
+        .pc_wr(pc_wr),
+        .pc_sel(pc_sel),
 
-  MUX_3 MUX_3_B(
-          .sel(MUX_B_sel),
-          .A(Input_B),
-          .B(ALU_Out_CPU),
-          .C(Mem_Data_OUT),
-          .Out(Input_Reg_B)
-        );
+        .mem_addr_sel(mem_addr_sel),
+        .mem_wr(mem_wr),
+        .mem_out_en(mem_out_en),
 
-  Mem mem(
-        .clk(clk),
-        .addr(PC), // Dirección fija para esta prueba
-        .Data_IN(ALU_Out_CPU),
-        .Data_OUT(Mem_Data_OUT),
-        .we(0)
-      );
+        .ir_wr(ir_wr),
 
-  CONTROL control(
-            .IR(IR),
-            .MUX_A_sel(MUX_A_sel),
-            .MUX_B_sel(MUX_B_sel),
-            .wr_REG_A(we_REG_A),
-            .wr_REG_B(we_REG_B),
-            .wr_ALU_out(wr_ALU_Out),
-            .ALU_Op(ALU_Op),
-            .clk(clk),
-            .reset(reset),
-            .wr_IR(wr_IR),
-            .Inc_PC(Inc_PC)
-          );
+        .halt(halt_set)
+    );
 
 endmodule
